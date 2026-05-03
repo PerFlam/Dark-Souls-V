@@ -7,16 +7,19 @@
 - Native Windows desktop game written in `C++`.
 - Pure Win32 + GDI rendering, so it does not rely on Qt, SFML, SDL, or external art assets.
 - Complete flow with menu, gameplay, pause, game over, and restart.
+- Includes `Normal` and `Hard` modes with clearly different gameplay parameters.
 - Player survives meteor waves, collects energy shards, and uses a pulse skill to clear nearby threats.
 
 ## Controls
 
+- `Left` / `Right` or `1` / `2`: choose mode in menu
 - `WASD` or arrow keys: move
 - `Space`: release pulse
 - `Shift`: focus movement for tighter control
 - `Esc` or `P`: pause / resume
 - `Enter`: start game
 - `R` or `Enter`: restart after game over
+- `M`: return to menu after game over
 
 ## Build
 
@@ -38,6 +41,7 @@ build/PulseHarbor.exe
 
 - Uses object-oriented structure with a central `Game` class and separate gameplay entities.
 - Includes dynamic difficulty scaling for a better gameplay curve.
+- Uses mode-based configuration to separate standard play from a harder challenge variant.
 - Suitable for a course demo because the logic, rendering, and interaction are all visible and easy to explain.
 
 ## Suggested Report Angles
