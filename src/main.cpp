@@ -15,7 +15,6 @@ namespace {
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 640;
 constexpr int kTimerId = 1;
-constexpr float kPi = 3.1415926535f;
 
 struct Vec2 {
     float x = 0.0f;
@@ -109,6 +108,67 @@ enum class Scene {
     GameOver,
 };
 
+enum class DifficultyMode {
+    Normal,
+    Hard,
+};
+
+struct ModeConfig {
+    const char* label;
+    int hp;
+    float initialSpawnTimer;
+    float baseSpawnInterval;
+    float minSpawnInterval;
+    float difficultyRampSeconds;
+    float meteorRadiusBonus;
+    float meteorSpeedBonus;
+    float energyRegenPerSecond;
+    float pulseCost;
+    float pulseCooldown;
+    float pulseRadius;
+    float shardDropChance;
+    float focusMultiplier;
+    float scoreMultiplier;
+};
+
+const ModeConfig& GetModeConfig(DifficultyMode mode) {
+    static const ModeConfig kNormal{
+        "NORMAL",
+        3,
+        0.45f,
+        0.85f,
+        0.22f,
+        18.0f,
+        0.0f,
+        0.0f,
+        14.0f,
+        35.0f,
+        0.75f,
+        165.0f,
+        0.38f,
+        0.62f,
+        1.0f,
+    };
+    static const ModeConfig kHard{
+        "HARD",
+        2,
+        0.30f,
+        0.74f,
+        0.14f,
+        13.0f,
+        5.0f,
+        32.0f,
+        10.0f,
+        42.0f,
+        0.95f,
+        150.0f,
+        0.26f,
+        0.56f,
+        1.55f,
+    };
+    return mode == DifficultyMode::Hard ? kHard : kNormal;
+}
+
 class Game {
 public:
     Game() : rng_(std::random_device{}()) {
@@ -118,8 +178,10 @@ public:
     }
 
     void Reset() {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         player_ = {};
         player_.pos = {kWindowWidth * 0.5f, kWindowHeight * 0.72f};
+        player_.hp = config.hp;
         meteors_.clear();
         shards_.clear();
         pulses_.clear();
@@ -128,7 +190,7 @@ public:
         score_ = 0.0f;
         killScore_ = 0;
         shardScore_ = 0;
-        spawnTimer_ = 0.45f;
+        spawnTimer_ = config.initialSpawnTimer;
         difficulty_ = 1.0f;
         keys_.assign(256, false);
     }
@@ -158,7 +220,17 @@ public:
         }
 
         if (scene_ == Scene::Menu) {
+            if (key == VK_LEFT || key == 'A') {
+                selectedMode_ = DifficultyMode::Normal;
+            } else if (key == VK_RIGHT || key == 'D') {
+                selectedMode_ = DifficultyMode::Hard;
+            } else if (key == '1') {
+                selectedMode_ = DifficultyMode::Normal;
+            } else if (key == '2') {
+                selectedMode_ = DifficultyMode::Hard;
+            }
             if (key == VK_RETURN) {
+                activeMode_ = selectedMode_;
                 StartRun();
             }
             return;
@@ -167,6 +239,8 @@ public:
         if (scene_ == Scene::GameOver) {
             if (key == 'R' || key == VK_RETURN) {
                 StartRun();
+            } else if (key == 'M') {
+                scene_ = Scene::Menu;
             }
             return;
         }
@@ -204,7 +278,8 @@ public:
         }
 
         elapsed_ += dt;
-        difficulty_ = 1.0f + elapsed_ / 18.0f;
+        const ModeConfig& config = GetModeConfig(activeMode_);
+        difficulty_ = 1.0f + elapsed_ / config.difficultyRampSeconds;
 
         UpdatePlayer(dt);
         UpdateSpawning(dt);
@@ -213,7 +288,7 @@ public:
         UpdatePulseEffects(dt);
         ResolveCollisions();
 
-        score_ = elapsed_ * 12.0f + static_cast<float>(killScore_ + shardScore_);
+        score_ = (elapsed_ * 12.0f + static_cast<float>(killScore_ + shardScore_)) * config.scoreMultiplier;
     }
 
     void Render(HDC hdc, const RECT& clientRect) {
@@ -262,6 +337,7 @@ private:
     }
 
     void UpdatePlayer(float dt) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         Vec2 input;
         if (IsPressed('A') || IsPressed(VK_LEFT)) {
             input.x -= 1.0f;
@@ -277,19 +353,22 @@ private:
         }
 
         input = Normalize(input);
-        float focus = IsPressed(VK_SHIFT) ? 0.62f : 1.0f;
+        float focus = IsPressed(VK_SHIFT) ? config.focusMultiplier : 1.0f;
         player_.pos += input * (player_.speed * focus * dt);
         player_.pos.x = ClampFloat(player_.pos.x, 30.0f, kWindowWidth - 30.0f);
         player_.pos.y = ClampFloat(player_.pos.y, 30.0f, kWindowHeight - 30.0f);
 
-        player_.energy = ClampFloat(player_.energy + 14.0f * dt, 0.0f, 100.0f);
+        player_.energy = ClampFloat(player_.energy + config.energyRegenPerSecond * dt, 0.0f, 100.0f);
         player_.pulseCooldown = std::max(0.0f, player_.pulseCooldown - dt);
         player_.invulnerable = std::max(0.0f, player_.invulnerable - dt);
     }
 
     void UpdateSpawning(float dt) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         spawnTimer_ -= dt;
-        float interval = ClampFloat(0.85f - difficulty_ * 0.05f, 0.22f, 0.85f);
+        float interval = ClampFloat(config.baseSpawnInterval - difficulty_ * 0.05f,
+                                    config.minSpawnInterval,
+                                    config.baseSpawnInterval);
         if (spawnTimer_ <= 0.0f) {
             SpawnMeteor();
             spawnTimer_ += interval;
@@ -297,6 +376,7 @@ private:
     }
 
     void SpawnMeteor() {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         Meteor meteor;
         int edge = RandInt(0, 3);
         if (edge == 0) {
@@ -309,21 +389,24 @@ private:
             meteor.pos = {RandFloat(0.0f, static_cast<float>(kWindowWidth)), kWindowHeight + 25.0f};
         }
 
-        meteor.radius = RandFloat(12.0f, ClampFloat(22.0f + difficulty_ * 2.5f, 22.0f, 38.0f));
+        meteor.radius = RandFloat(12.0f + config.meteorRadiusBonus * 0.3f,
+                                  ClampFloat(22.0f + difficulty_ * 2.5f + config.meteorRadiusBonus, 22.0f, 42.0f));
         Vec2 towardPlayer = Normalize(player_.pos - meteor.pos);
         Vec2 offset = {RandFloat(-0.35f, 0.35f), RandFloat(-0.35f, 0.35f)};
         Vec2 heading = Normalize(towardPlayer + offset);
-        float speed = RandFloat(100.0f + difficulty_ * 16.0f, 165.0f + difficulty_ * 25.0f);
+        float speed = RandFloat(100.0f + difficulty_ * 16.0f + config.meteorSpeedBonus,
+                                165.0f + difficulty_ * 25.0f + config.meteorSpeedBonus);
         meteor.vel = heading * speed;
         meteor.wobble = RandFloat(0.0f, 6.28f);
         meteors_.push_back(meteor);
     }
 
     void UpdateMeteors(float dt) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         for (auto& meteor : meteors_) {
             Vec2 steer = Normalize(player_.pos - meteor.pos) * (18.0f * dt);
             meteor.vel += steer;
-            float speed = ClampFloat(Length(meteor.vel), 80.0f, 260.0f + difficulty_ * 18.0f);
+            float speed = ClampFloat(Length(meteor.vel), 80.0f, 260.0f + difficulty_ * 18.0f + config.meteorSpeedBonus);
             meteor.vel = Normalize(meteor.vel) * speed;
 
             meteor.wobble += dt * 2.0f;
@@ -399,7 +482,7 @@ private:
             meteors_.erase(meteors_.begin() + static_cast<long long>(i));
 
             if (player_.hp <= 0) {
-                bestScore_ = std::max(bestScore_, static_cast<int>(score_));
+                GetBestScoreRef(activeMode_) = std::max(GetBestScoreRef(activeMode_), static_cast<int>(score_));
                 scene_ = Scene::GameOver;
             }
             break;
@@ -407,17 +490,18 @@ private:
     }
 
     void ActivatePulse() {
-        if (player_.energy < 35.0f || player_.pulseCooldown > 0.0f) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
+        if (player_.energy < config.pulseCost || player_.pulseCooldown > 0.0f) {
             return;
         }
 
-        player_.energy -= 35.0f;
-        player_.pulseCooldown = 0.75f;
-        pulses_.push_back({player_.pos, 0.35f, 0.35f, 175.0f});
+        player_.energy -= config.pulseCost;
+        player_.pulseCooldown = config.pulseCooldown;
+        pulses_.push_back({player_.pos, 0.35f, 0.35f, config.pulseRadius + 10.0f});
 
         int destroyed = 0;
         for (size_t i = 0; i < meteors_.size();) {
-            float reach = 165.0f + meteors_[i].radius;
+            float reach = config.pulseRadius + meteors_[i].radius;
             if (LengthSquared(meteors_[i].pos - player_.pos) <= reach * reach) {
                 MaybeSpawnShard(meteors_[i].pos);
                 meteors_.erase(meteors_.begin() + static_cast<long long>(i));
@@ -430,7 +514,8 @@ private:
     }
 
     void MaybeSpawnShard(const Vec2& pos) {
-        if (RandFloat(0.0f, 1.0f) > 0.38f) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
+        if (RandFloat(0.0f, 1.0f) > config.shardDropChance) {
             return;
         }
 
@@ -442,6 +527,10 @@ private:
 
     bool IsPressed(WPARAM key) const {
         return key < keys_.size() && keys_[key];
+    }
+
+    int& GetBestScoreRef(DifficultyMode mode) {
+        return mode == DifficultyMode::Hard ? hardBestScore_ : normalBestScore_;
     }
 
     void DrawBackground(HDC hdc, const RECT& clientRect) {
@@ -526,6 +615,7 @@ private:
     }
 
     void DrawHud(HDC hdc) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         SetBkMode(hdc, TRANSPARENT);
 
         HFONT titleFont = CreateFontA(22, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
@@ -546,12 +636,16 @@ private:
         diffText << "Threat " << std::fixed << std::setprecision(1) << difficulty_;
         TextOutA(hdc, 28, 80, diffText.str().c_str(), static_cast<int>(diffText.str().size()));
 
+        std::ostringstream modeText;
+        modeText << "Mode " << config.label;
+        TextOutA(hdc, 28, 110, modeText.str().c_str(), static_cast<int>(modeText.str().size()));
+
         SelectObject(hdc, oldFont);
         DeleteObject(titleFont);
 
         DrawMeter(hdc, 730, 22, 180, 18, player_.energy / 100.0f, RGB(80, 255, 180), "Energy");
 
-        float cooldownRatio = player_.pulseCooldown <= 0.0f ? 1.0f : 1.0f - player_.pulseCooldown / 0.75f;
+        float cooldownRatio = player_.pulseCooldown <= 0.0f ? 1.0f : 1.0f - player_.pulseCooldown / config.pulseCooldown;
         DrawMeter(hdc, 730, 54, 180, 14, cooldownRatio, RGB(120, 180, 255), "Pulse");
 
         HFONT infoFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
@@ -573,21 +667,35 @@ private:
     }
 
     void DrawMenu(HDC hdc, const RECT& clientRect) {
+        const bool normalSelected = selectedMode_ == DifficultyMode::Normal;
+        const bool hardSelected = selectedMode_ == DifficultyMode::Hard;
         DrawCenterBlock(hdc, clientRect, 180);
         DrawCenteredText(hdc, clientRect, 168, 44, FW_BOLD, RGB(245, 248, 255), "PULSE HARBOR");
         DrawCenteredText(hdc, clientRect, 228, 24, FW_NORMAL, RGB(180, 220, 255),
                          "Survive the meteor field and release pulse waves.");
         DrawCenteredText(hdc, clientRect, 266, 22, FW_NORMAL, RGB(170, 205, 235),
                          "Collect green shards to recharge. Focus with Shift when the field gets crowded.");
-        DrawCenteredText(hdc, clientRect, 320, 28, FW_BOLD, RGB(255, 234, 170),
+        DrawCenteredText(hdc, clientRect, 306, 20, FW_NORMAL, RGB(165, 196, 226),
+                         "Select mode with Left / Right or 1 / 2");
+        DrawCenteredText(hdc, clientRect, 338, 28, FW_BOLD, normalSelected ? RGB(150, 255, 200) : RGB(130, 150, 175),
+                         "1. NORMAL");
+        DrawCenteredText(hdc, clientRect, 372, 28, FW_BOLD, hardSelected ? RGB(255, 150, 120) : RGB(130, 150, 175),
+                         "2. HARD");
+        DrawCenteredText(hdc, clientRect, 412, 18, FW_NORMAL,
+                         normalSelected ? RGB(170, 225, 255) : RGB(255, 195, 180),
+                         normalSelected ? "Balanced survival mode with 3 HP and standard pulse recovery."
+                                        : "2 HP, faster meteors, weaker recovery, higher score multiplier.");
+        DrawCenteredText(hdc, clientRect, 452, 28, FW_BOLD, RGB(255, 234, 170),
                          "Press Enter to Start");
-        DrawCenteredText(hdc, clientRect, 364, 20, FW_NORMAL, RGB(170, 195, 220),
+        DrawCenteredText(hdc, clientRect, 490, 20, FW_NORMAL, RGB(170, 195, 220),
                          "Controls: WASD / Arrows move, Space pulse, Esc pause");
-        if (bestScore_ > 0) {
-            std::ostringstream best;
-            best << "Best score " << bestScore_;
-            DrawCenteredText(hdc, clientRect, 402, 20, FW_NORMAL, RGB(150, 255, 200), best.str().c_str());
-        }
+        std::ostringstream normalBest;
+        normalBest << "Normal best " << normalBestScore_;
+        DrawCenteredText(hdc, clientRect, 530, 18, FW_NORMAL, RGB(150, 255, 200), normalBest.str().c_str());
+
+        std::ostringstream hardBest;
+        hardBest << "Hard best " << hardBestScore_;
+        DrawCenteredText(hdc, clientRect, 556, 18, FW_NORMAL, RGB(255, 182, 160), hardBest.str().c_str());
     }
 
     void DrawPauseOverlay(HDC hdc, const RECT& clientRect) {
@@ -598,6 +706,7 @@ private:
     }
 
     void DrawGameOver(HDC hdc, const RECT& clientRect) {
+        const ModeConfig& config = GetModeConfig(activeMode_);
         DrawCenterBlock(hdc, clientRect, 180);
         DrawCenteredText(hdc, clientRect, 188, 42, FW_BOLD, RGB(255, 222, 198), "MISSION OVER");
 
@@ -610,11 +719,13 @@ private:
         DrawCenteredText(hdc, clientRect, 286, 22, FW_NORMAL, RGB(190, 220, 235), survived.str().c_str());
 
         std::ostringstream best;
-        best << "Best score " << bestScore_;
+        best << config.label << " best " << GetBestScoreRef(activeMode_);
         DrawCenteredText(hdc, clientRect, 320, 22, FW_NORMAL, RGB(160, 255, 200), best.str().c_str());
 
         DrawCenteredText(hdc, clientRect, 370, 28, FW_BOLD, RGB(255, 234, 170),
                          "Press R or Enter to Restart");
+        DrawCenteredText(hdc, clientRect, 408, 20, FW_NORMAL, RGB(180, 210, 230),
+                         "Press M to return to menu");
     }
 
     void DrawCenterBlock(HDC hdc, const RECT& clientRect, int top) {
@@ -715,9 +826,12 @@ private:
     float score_ = 0.0f;
     int killScore_ = 0;
     int shardScore_ = 0;
-    int bestScore_ = 0;
+    int normalBestScore_ = 0;
+    int hardBestScore_ = 0;
     float spawnTimer_ = 0.0f;
     float difficulty_ = 1.0f;
+    DifficultyMode selectedMode_ = DifficultyMode::Normal;
+    DifficultyMode activeMode_ = DifficultyMode::Normal;
 };
 
 Game* g_game = nullptr;
