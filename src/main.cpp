@@ -178,18 +178,18 @@ const ModeConfig& GetModeConfig(DifficultyMode mode) {
     static const ModeConfig kHard{
         "HARD",
         2,
-        0.30f,
-        0.74f,
-        0.14f,
-        13.0f,
-        5.0f,
-        32.0f,
-        10.0f,
-        42.0f,
-        0.95f,
-        150.0f,
         0.26f,
-        0.56f,
+        0.68f,
+        0.12f,
+        11.5f,
+        6.0f,
+        40.0f,
+        9.0f,
+        45.0f,
+        1.05f,
+        145.0f,
+        0.22f,
+        0.54f,
         1.55f,
     };
     return mode == DifficultyMode::Hard ? kHard : kNormal;
@@ -1174,6 +1174,8 @@ private:
 
         float cooldownRatio = player_.pulseCooldown <= 0.0f ? 1.0f : 1.0f - player_.pulseCooldown / config.pulseCooldown;
         DrawMeter(hdc, 730, 54, 180, 14, cooldownRatio, RGB(120, 180, 255), "Pulse");
+        float hpRatio = static_cast<float>(player_.hp) / static_cast<float>(config.hp);
+        DrawMeter(hdc, 730, 80, 180, 16, hpRatio, RGB(235, 68, 68), "HP");
 
         HFONT infoFont = CreateFontA(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
                                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
@@ -1181,17 +1183,12 @@ private:
         oldFont = static_cast<HFONT>(SelectObject(hdc, infoFont));
         SetTextColor(hdc, RGB(255, 245, 230));
 
-        std::ostringstream hpText;
-        hpText << "HP " << player_.hp << "/3";
-        const std::string hpLabel = hpText.str();
-        TextOutA(hdc, 730, 78, hpLabel.c_str(), static_cast<int>(hpLabel.size()));
-
         if (hasInfiniteEnergy) {
             std::ostringstream ringText;
             ringText << "Ring " << std::fixed << std::setprecision(1) << player_.infiniteEnergyTimer << "s";
             const std::string ringLabel = ringText.str();
             SetTextColor(hdc, RGB(255, 227, 140));
-            TextOutA(hdc, 730, 102, ringLabel.c_str(), static_cast<int>(ringLabel.size()));
+            TextOutA(hdc, 730, 108, ringLabel.c_str(), static_cast<int>(ringLabel.size()));
         }
 
         const char* controls = "Move WASD / Arrows | Space Pulse | Shift Focus | Esc Pause";
