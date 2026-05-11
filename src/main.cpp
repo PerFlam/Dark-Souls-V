@@ -1,16 +1,24 @@
 #define NOMINMAX
 #include <windows.h>
+#include <gdiplus.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+
+using Gdiplus::Color;
+using Gdiplus::Graphics;
+using Gdiplus::Image;
+using Gdiplus::RectF;
+using Gdiplus::SolidBrush;
 
 constexpr int kWindowWidth = 960;
 constexpr int kWindowHeight = 640;
@@ -72,6 +80,7 @@ struct Player {
     float energy = 100.0f;
     float pulseCooldown = 0.0f;
     float invulnerable = 0.0f;
+    float infiniteEnergyTimer = 0.0f;
 };
 
 struct Meteor {
@@ -79,6 +88,7 @@ struct Meteor {
     Vec2 vel;
     float radius = 16.0f;
     float wobble = 0.0f;
+    float shootCooldown = 0.0f;
 };
 
 struct EnergyShard {
@@ -99,6 +109,21 @@ struct Star {
     Vec2 pos;
     float size = 1.0f;
     float phase = 0.0f;
+};
+
+struct RingPowerup {
+    Vec2 pos;
+    float radius = 24.0f;
+    float bobPhase = 0.0f;
+    float life = 0.0f;
+    bool active = false;
+};
+
+struct EnemyBullet {
+    Vec2 pos;
+    Vec2 vel;
+    float radius = 13.0f;
+    float life = 0.0f;
 };
 
 enum class Scene {
@@ -169,6 +194,115 @@ const ModeConfig& GetModeConfig(DifficultyMode mode) {
     return mode == DifficultyMode::Hard ? kHard : kNormal;
 }
 
+ULONG_PTR g_gdiplusToken = 0;
+std::unique_ptr<Image> g_gameOverImage;
+std::unique_ptr<Image> g_ringPowerupImage;
+std::unique_ptr<Image> g_enemySpriteImage;
+std::unique_ptr<Image> g_poopBulletImage;
+std::unique_ptr<Image> g_menuBackgroundImage;
+
+std::wstring GetExecutableDirectory() {
+    wchar_t buffer[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    std::wstring path(buffer);
+    size_t slashPos = path.find_last_of(L"\\/");
+    if (slashPos == std::wstring::npos) {
+        return L".";
+    }
+    return path.substr(0, slashPos);
+}
+
+bool FileExists(const std::wstring& path) {
+    DWORD attributes = GetFileAttributesW(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+std::wstring GetGameOverImagePath() {
+    const std::wstring exeDir = GetExecutableDirectory();
+    const std::wstring candidateFromBuild = exeDir + L"\\..\\assets\\game_over.png";
+    if (FileExists(candidateFromBuild)) {
+        return candidateFromBuild;
+    }
+
+    const std::wstring candidateLocal = exeDir + L"\\assets\\game_over.png";
+    if (FileExists(candidateLocal)) {
+        return candidateLocal;
+    }
+
+    return candidateFromBuild;
+}
+
+std::wstring GetAssetPath(const wchar_t* assetName) {
+    const std::wstring exeDir = GetExecutableDirectory();
+    const std::wstring candidateFromBuild = exeDir + L"\\..\\assets\\" + assetName;
+    if (FileExists(candidateFromBuild)) {
+        return candidateFromBuild;
+    }
+
+    const std::wstring candidateLocal = exeDir + L"\\assets\\" + assetName;
+    if (FileExists(candidateLocal)) {
+        return candidateLocal;
+    }
+
+    return candidateFromBuild;
+}
+
+void EnsureGameOverImageLoaded() {
+    if (g_gameOverImage != nullptr) {
+        return;
+    }
+
+    const std::wstring imagePath = GetGameOverImagePath();
+    auto image = std::make_unique<Image>(imagePath.c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_gameOverImage = std::move(image);
+    }
+}
+
+void EnsureRingImageLoaded() {
+    if (g_ringPowerupImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"ring_powerup.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_ringPowerupImage = std::move(image);
+    }
+}
+
+void EnsureEnemySpriteLoaded() {
+    if (g_enemySpriteImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"enemy_sprite.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_enemySpriteImage = std::move(image);
+    }
+}
+
+void EnsurePoopBulletImageLoaded() {
+    if (g_poopBulletImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"poop_bullet.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_poopBulletImage = std::move(image);
+    }
+}
+
+void EnsureMenuBackgroundLoaded() {
+    if (g_menuBackgroundImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"menu_background.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_menuBackgroundImage = std::move(image);
+    }
+}
+
 class Game {
 public:
     Game() : rng_(std::random_device{}()) {
@@ -183,14 +317,17 @@ public:
         player_.pos = {kWindowWidth * 0.5f, kWindowHeight * 0.72f};
         player_.hp = config.hp;
         meteors_.clear();
+        enemyBullets_.clear();
         shards_.clear();
         pulses_.clear();
+        ringPowerup_ = {};
         elapsed_ = 0.0f;
         ambientTime_ = 0.0f;
         score_ = 0.0f;
         killScore_ = 0;
         shardScore_ = 0;
         spawnTimer_ = config.initialSpawnTimer;
+        ringSpawnTimer_ = RandFloat(9.0f, 16.0f);
         difficulty_ = 1.0f;
         keys_.assign(256, false);
     }
@@ -284,7 +421,9 @@ public:
         UpdatePlayer(dt);
         UpdateSpawning(dt);
         UpdateMeteors(dt);
+        UpdateEnemyBullets(dt);
         UpdateShards(dt);
+        UpdateRingPowerup(dt);
         UpdatePulseEffects(dt);
         ResolveCollisions();
 
@@ -292,24 +431,29 @@ public:
     }
 
     void Render(HDC hdc, const RECT& clientRect) {
-        DrawBackground(hdc, clientRect);
-        DrawGrid(hdc, clientRect);
+        if (scene_ == Scene::GameOver) {
+            DrawGameOver(hdc, clientRect);
+            return;
+        }
 
         if (scene_ == Scene::Menu) {
             DrawMenu(hdc, clientRect);
             return;
         }
 
+        DrawBackground(hdc, clientRect);
+        DrawGrid(hdc, clientRect);
+
         DrawShards(hdc);
         DrawMeteors(hdc);
+        DrawEnemyBullets(hdc);
+        DrawRingPowerup(hdc);
         DrawPulseEffects(hdc);
         DrawPlayer(hdc);
         DrawHud(hdc);
 
         if (scene_ == Scene::Paused) {
             DrawPauseOverlay(hdc, clientRect);
-        } else if (scene_ == Scene::GameOver) {
-            DrawGameOver(hdc, clientRect);
         }
     }
 
@@ -359,6 +503,10 @@ private:
         player_.pos.y = ClampFloat(player_.pos.y, 30.0f, kWindowHeight - 30.0f);
 
         player_.energy = ClampFloat(player_.energy + config.energyRegenPerSecond * dt, 0.0f, 100.0f);
+        player_.infiniteEnergyTimer = std::max(0.0f, player_.infiniteEnergyTimer - dt);
+        if (player_.infiniteEnergyTimer > 0.0f) {
+            player_.energy = 100.0f;
+        }
         player_.pulseCooldown = std::max(0.0f, player_.pulseCooldown - dt);
         player_.invulnerable = std::max(0.0f, player_.invulnerable - dt);
     }
@@ -398,6 +546,7 @@ private:
                                 165.0f + difficulty_ * 25.0f + config.meteorSpeedBonus);
         meteor.vel = heading * speed;
         meteor.wobble = RandFloat(0.0f, 6.28f);
+        meteor.shootCooldown = RandFloat(1.2f, 3.8f);
         meteors_.push_back(meteor);
     }
 
@@ -415,6 +564,15 @@ private:
 
             meteor.pos += meteor.vel * dt;
             meteor.pos += sway;
+
+            meteor.shootCooldown -= dt;
+            if (meteor.shootCooldown <= 0.0f) {
+                const float shootChance = activeMode_ == DifficultyMode::Hard ? 0.62f : 0.38f;
+                if (RandFloat(0.0f, 1.0f) < shootChance) {
+                    SpawnEnemyBullet(meteor);
+                }
+                meteor.shootCooldown = RandFloat(1.6f, activeMode_ == DifficultyMode::Hard ? 3.2f : 4.4f);
+            }
         }
 
         meteors_.erase(
@@ -426,6 +584,37 @@ private:
                            meteor.pos.y < -120.0f || meteor.pos.y > kWindowHeight + 120.0f;
                 }),
             meteors_.end());
+    }
+
+    void SpawnEnemyBullet(const Meteor& meteor) {
+        EnemyBullet bullet;
+        bullet.pos = meteor.pos;
+        Vec2 aim = Normalize(player_.pos - meteor.pos);
+        Vec2 spread{RandFloat(-0.16f, 0.16f), RandFloat(-0.16f, 0.16f)};
+        aim = Normalize(aim + spread);
+        bullet.vel = aim * RandFloat(activeMode_ == DifficultyMode::Hard ? 230.0f : 195.0f,
+                                     activeMode_ == DifficultyMode::Hard ? 320.0f : 260.0f);
+        bullet.life = RandFloat(3.5f, 5.0f);
+        bullet.radius = RandFloat(11.0f, 15.5f);
+        enemyBullets_.push_back(bullet);
+    }
+
+    void UpdateEnemyBullets(float dt) {
+        for (auto& bullet : enemyBullets_) {
+            bullet.life -= dt;
+            bullet.pos += bullet.vel * dt;
+        }
+
+        enemyBullets_.erase(
+            std::remove_if(
+                enemyBullets_.begin(),
+                enemyBullets_.end(),
+                [](const EnemyBullet& bullet) {
+                    return bullet.life <= 0.0f ||
+                           bullet.pos.x < -80.0f || bullet.pos.x > kWindowWidth + 80.0f ||
+                           bullet.pos.y < -80.0f || bullet.pos.y > kWindowHeight + 80.0f;
+                }),
+            enemyBullets_.end());
     }
 
     void UpdateShards(float dt) {
@@ -441,6 +630,46 @@ private:
                 shards_.end(),
                 [](const EnergyShard& shard) { return shard.life <= 0.0f; }),
             shards_.end());
+    }
+
+    void UpdateRingPowerup(float dt) {
+        if (ringPowerup_.active) {
+            ringPowerup_.life -= dt;
+            ringPowerup_.bobPhase += dt * 2.8f;
+            if (ringPowerup_.life <= 0.0f) {
+                ringPowerup_.active = false;
+                ringSpawnTimer_ = RandFloat(8.0f, 14.0f);
+            }
+            return;
+        }
+
+        ringSpawnTimer_ -= dt;
+        if (ringSpawnTimer_ > 0.0f) {
+            return;
+        }
+
+        SpawnRingPowerup();
+    }
+
+    void SpawnRingPowerup() {
+        ringPowerup_.active = true;
+        ringPowerup_.life = 11.0f;
+        ringPowerup_.radius = 24.0f;
+        ringPowerup_.bobPhase = RandFloat(0.0f, 6.28f);
+
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            Vec2 pos{
+                RandFloat(90.0f, kWindowWidth - 90.0f),
+                RandFloat(90.0f, kWindowHeight - 130.0f),
+            };
+            if (LengthSquared(pos - player_.pos) < 170.0f * 170.0f) {
+                continue;
+            }
+            ringPowerup_.pos = pos;
+            return;
+        }
+
+        ringPowerup_.pos = {kWindowWidth * 0.5f, 120.0f};
     }
 
     void UpdatePulseEffects(float dt) {
@@ -467,7 +696,32 @@ private:
             ++i;
         }
 
+        if (ringPowerup_.active && CircleHit(player_.pos, player_.radius + 3.0f, ringPowerup_.pos, ringPowerup_.radius)) {
+            player_.infiniteEnergyTimer = 5.0f;
+            player_.energy = 100.0f;
+            ringPowerup_.active = false;
+            ringSpawnTimer_ = RandFloat(18.0f, 28.0f);
+            shardScore_ += 25;
+        }
+
         if (player_.invulnerable > 0.0f) {
+            return;
+        }
+
+        for (size_t i = 0; i < enemyBullets_.size(); ++i) {
+            if (!CircleHit(player_.pos, player_.radius, enemyBullets_[i].pos, enemyBullets_[i].radius)) {
+                continue;
+            }
+
+            player_.hp -= 1;
+            player_.invulnerable = 1.0f;
+            pulses_.push_back({player_.pos, 0.16f, 0.16f, 82.0f});
+            enemyBullets_.erase(enemyBullets_.begin() + static_cast<long long>(i));
+
+            if (player_.hp <= 0) {
+                GetBestScoreRef(activeMode_) = std::max(GetBestScoreRef(activeMode_), static_cast<int>(score_));
+                scene_ = Scene::GameOver;
+            }
             return;
         }
 
@@ -491,11 +745,14 @@ private:
 
     void ActivatePulse() {
         const ModeConfig& config = GetModeConfig(activeMode_);
-        if (player_.energy < config.pulseCost || player_.pulseCooldown > 0.0f) {
+        const bool hasInfiniteEnergy = player_.infiniteEnergyTimer > 0.0f;
+        if ((!hasInfiniteEnergy && player_.energy < config.pulseCost) || player_.pulseCooldown > 0.0f) {
             return;
         }
 
-        player_.energy -= config.pulseCost;
+        if (!hasInfiniteEnergy) {
+            player_.energy -= config.pulseCost;
+        }
         player_.pulseCooldown = config.pulseCooldown;
         pulses_.push_back({player_.pos, 0.35f, 0.35f, config.pulseRadius + 10.0f});
 
@@ -506,6 +763,14 @@ private:
                 MaybeSpawnShard(meteors_[i].pos);
                 meteors_.erase(meteors_.begin() + static_cast<long long>(i));
                 destroyed += 1;
+                continue;
+            }
+            ++i;
+        }
+        for (size_t i = 0; i < enemyBullets_.size();) {
+            float reach = config.pulseRadius + enemyBullets_[i].radius;
+            if (LengthSquared(enemyBullets_[i].pos - player_.pos) <= reach * reach) {
+                enemyBullets_.erase(enemyBullets_.begin() + static_cast<long long>(i));
                 continue;
             }
             ++i;
@@ -589,12 +854,42 @@ private:
     }
 
     void DrawMeteors(HDC hdc) {
+        EnsureEnemySpriteLoaded();
         for (const auto& meteor : meteors_) {
-            COLORREF outer = RGB(255, 130, 90);
-            COLORREF inner = RGB(255, 204, 120);
-            DrawFilledCircle(hdc, meteor.pos, meteor.radius, outer);
-            DrawFilledCircle(hdc, meteor.pos, meteor.radius * 0.48f, inner);
-            DrawOutlineCircle(hdc, meteor.pos, meteor.radius + 2.0f, RGB(255, 235, 180), 1);
+            if (g_enemySpriteImage != nullptr) {
+                Graphics graphics(hdc);
+                graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+                const float size = meteor.radius * 3.2f;
+                graphics.DrawImage(g_enemySpriteImage.get(),
+                                   RectF(meteor.pos.x - size * 0.5f,
+                                         meteor.pos.y - size * 0.5f,
+                                         size,
+                                         size));
+            } else {
+                COLORREF outer = RGB(255, 130, 90);
+                COLORREF inner = RGB(255, 204, 120);
+                DrawFilledCircle(hdc, meteor.pos, meteor.radius, outer);
+                DrawFilledCircle(hdc, meteor.pos, meteor.radius * 0.48f, inner);
+                DrawOutlineCircle(hdc, meteor.pos, meteor.radius + 2.0f, RGB(255, 235, 180), 1);
+            }
+        }
+    }
+
+    void DrawEnemyBullets(HDC hdc) {
+        EnsurePoopBulletImageLoaded();
+        for (const auto& bullet : enemyBullets_) {
+            if (g_poopBulletImage != nullptr) {
+                Graphics graphics(hdc);
+                graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+                const float size = bullet.radius * 2.8f;
+                graphics.DrawImage(g_poopBulletImage.get(),
+                                   RectF(bullet.pos.x - size * 0.5f,
+                                         bullet.pos.y - size * 0.5f,
+                                         size,
+                                         size));
+            } else {
+                DrawFilledCircle(hdc, bullet.pos, bullet.radius, RGB(180, 120, 60));
+            }
         }
     }
 
@@ -612,6 +907,32 @@ private:
             int intensity = static_cast<int>(255 - 120 * t);
             DrawOutlineCircle(hdc, pulse.pos, radius, RGB(120, intensity, 255), 3);
         }
+    }
+
+    void DrawRingPowerup(HDC hdc) {
+        if (!ringPowerup_.active) {
+            return;
+        }
+
+        EnsureRingImageLoaded();
+
+        const float bobOffset = std::sin(ringPowerup_.bobPhase) * 7.0f;
+        const Vec2 drawPos{ringPowerup_.pos.x, ringPowerup_.pos.y + bobOffset};
+        DrawOutlineCircle(hdc, drawPos, ringPowerup_.radius + 8.0f, RGB(255, 214, 110), 2);
+
+        if (g_ringPowerupImage != nullptr) {
+            Graphics graphics(hdc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            const float size = ringPowerup_.radius * 2.7f;
+            graphics.DrawImage(g_ringPowerupImage.get(),
+                               RectF(drawPos.x - size * 0.5f,
+                                     drawPos.y - size * 0.5f,
+                                     size,
+                                     size));
+            return;
+        }
+
+        DrawFilledCircle(hdc, drawPos, ringPowerup_.radius, RGB(240, 190, 80));
     }
 
     void DrawHud(HDC hdc) {
@@ -643,7 +964,15 @@ private:
         SelectObject(hdc, oldFont);
         DeleteObject(titleFont);
 
-        DrawMeter(hdc, 730, 22, 180, 18, player_.energy / 100.0f, RGB(80, 255, 180), "Energy");
+        const bool hasInfiniteEnergy = player_.infiniteEnergyTimer > 0.0f;
+        DrawMeter(hdc,
+                  730,
+                  22,
+                  180,
+                  18,
+                  player_.energy / 100.0f,
+                  hasInfiniteEnergy ? RGB(255, 214, 92) : RGB(80, 255, 180),
+                  hasInfiniteEnergy ? "Inf.Eng" : "Energy");
 
         float cooldownRatio = player_.pulseCooldown <= 0.0f ? 1.0f : 1.0f - player_.pulseCooldown / config.pulseCooldown;
         DrawMeter(hdc, 730, 54, 180, 14, cooldownRatio, RGB(120, 180, 255), "Pulse");
@@ -659,6 +988,14 @@ private:
         const std::string hpLabel = hpText.str();
         TextOutA(hdc, 730, 78, hpLabel.c_str(), static_cast<int>(hpLabel.size()));
 
+        if (hasInfiniteEnergy) {
+            std::ostringstream ringText;
+            ringText << "Ring " << std::fixed << std::setprecision(1) << player_.infiniteEnergyTimer << "s";
+            const std::string ringLabel = ringText.str();
+            SetTextColor(hdc, RGB(255, 227, 140));
+            TextOutA(hdc, 730, 102, ringLabel.c_str(), static_cast<int>(ringLabel.size()));
+        }
+
         const char* controls = "Move WASD / Arrows | Space Pulse | Shift Focus | Esc Pause";
         TextOutA(hdc, 240, 602, controls, lstrlenA(controls));
 
@@ -667,10 +1004,30 @@ private:
     }
 
     void DrawMenu(HDC hdc, const RECT& clientRect) {
+        Graphics graphics(hdc);
+        EnsureMenuBackgroundLoaded();
+        if (g_menuBackgroundImage != nullptr) {
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.DrawImage(g_menuBackgroundImage.get(),
+                               RectF(0.0f,
+                                     0.0f,
+                                     static_cast<float>(clientRect.right),
+                                     static_cast<float>(clientRect.bottom)));
+        } else {
+            DrawBackground(hdc, clientRect);
+        }
+
+        SolidBrush dimBrush(Color(116, 0, 0, 0));
+        graphics.FillRectangle(&dimBrush,
+                               0.0f,
+                               0.0f,
+                               static_cast<float>(clientRect.right),
+                               static_cast<float>(clientRect.bottom));
+
         const bool normalSelected = selectedMode_ == DifficultyMode::Normal;
         const bool hardSelected = selectedMode_ == DifficultyMode::Hard;
         DrawCenterBlock(hdc, clientRect, 180);
-        DrawCenteredText(hdc, clientRect, 168, 44, FW_BOLD, RGB(245, 248, 255), "PULSE HARBOR");
+        DrawCenteredText(hdc, clientRect, 168, 44, FW_BOLD, RGB(245, 248, 255), "DARK SOULS V");
         DrawCenteredText(hdc, clientRect, 228, 24, FW_NORMAL, RGB(180, 220, 255),
                          "Survive the meteor field and release pulse waves.");
         DrawCenteredText(hdc, clientRect, 266, 22, FW_NORMAL, RGB(170, 205, 235),
@@ -707,24 +1064,60 @@ private:
 
     void DrawGameOver(HDC hdc, const RECT& clientRect) {
         const ModeConfig& config = GetModeConfig(activeMode_);
-        DrawCenterBlock(hdc, clientRect, 180);
-        DrawCenteredText(hdc, clientRect, 188, 42, FW_BOLD, RGB(255, 222, 198), "MISSION OVER");
+        Graphics graphics(hdc);
+        EnsureGameOverImageLoaded();
+
+        if (g_gameOverImage != nullptr) {
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.DrawImage(g_gameOverImage.get(),
+                               RectF(0.0f,
+                                     0.0f,
+                                     static_cast<float>(clientRect.right),
+                                     static_cast<float>(clientRect.bottom)));
+        } else {
+            DrawBackground(hdc, clientRect);
+        }
+
+        SolidBrush dimBrush(Color(84, 0, 0, 0));
+        graphics.FillRectangle(&dimBrush,
+                               0.0f,
+                               0.0f,
+                               static_cast<float>(clientRect.right),
+                               static_cast<float>(clientRect.bottom));
+
+        RECT banner{
+            clientRect.left + 70,
+            clientRect.top + 360,
+            clientRect.right - 70,
+            clientRect.top + 455,
+        };
+        HBRUSH bannerBrush = CreateSolidBrush(RGB(10, 10, 10));
+        HPEN bannerPen = CreatePen(PS_SOLID, 1, RGB(40, 40, 40));
+        HGDIOBJ oldBrush = SelectObject(hdc, bannerBrush);
+        HGDIOBJ oldPen = SelectObject(hdc, bannerPen);
+        RoundRect(hdc, banner.left, banner.top, banner.right, banner.bottom, 12, 12);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(bannerBrush);
+        DeleteObject(bannerPen);
+
+        DrawCenteredText(hdc, clientRect, 370, 74, FW_BOLD, RGB(170, 20, 20), "YOU DIED");
 
         std::ostringstream result;
         result << "Final score " << static_cast<int>(score_);
-        DrawCenteredText(hdc, clientRect, 246, 26, FW_BOLD, RGB(255, 245, 220), result.str().c_str());
+        DrawCenteredText(hdc, clientRect, 470, 24, FW_BOLD, RGB(255, 245, 220), result.str().c_str());
 
         std::ostringstream survived;
         survived << "Survived " << std::fixed << std::setprecision(1) << elapsed_ << " seconds";
-        DrawCenteredText(hdc, clientRect, 286, 22, FW_NORMAL, RGB(190, 220, 235), survived.str().c_str());
+        DrawCenteredText(hdc, clientRect, 504, 20, FW_NORMAL, RGB(220, 220, 220), survived.str().c_str());
 
         std::ostringstream best;
         best << config.label << " best " << GetBestScoreRef(activeMode_);
-        DrawCenteredText(hdc, clientRect, 320, 22, FW_NORMAL, RGB(160, 255, 200), best.str().c_str());
+        DrawCenteredText(hdc, clientRect, 534, 20, FW_NORMAL, RGB(200, 200, 200), best.str().c_str());
 
-        DrawCenteredText(hdc, clientRect, 370, 28, FW_BOLD, RGB(255, 234, 170),
+        DrawCenteredText(hdc, clientRect, 575, 24, FW_BOLD, RGB(255, 234, 170),
                          "Press R or Enter to Restart");
-        DrawCenteredText(hdc, clientRect, 408, 20, FW_NORMAL, RGB(180, 210, 230),
+        DrawCenteredText(hdc, clientRect, 608, 18, FW_NORMAL, RGB(200, 210, 220),
                          "Press M to return to menu");
     }
 
@@ -815,8 +1208,10 @@ private:
     Scene scene_ = Scene::Menu;
     Player player_;
     std::vector<Meteor> meteors_;
+    std::vector<EnemyBullet> enemyBullets_;
     std::vector<EnergyShard> shards_;
     std::vector<PulseRing> pulses_;
+    RingPowerup ringPowerup_;
     std::vector<Star> stars_;
     std::vector<bool> keys_ = std::vector<bool>(256, false);
     std::mt19937 rng_;
@@ -829,6 +1224,7 @@ private:
     int normalBestScore_ = 0;
     int hardBestScore_ = 0;
     float spawnTimer_ = 0.0f;
+    float ringSpawnTimer_ = 0.0f;
     float difficulty_ = 1.0f;
     DifficultyMode selectedMode_ = DifficultyMode::Normal;
     DifficultyMode activeMode_ = DifficultyMode::Normal;
@@ -904,10 +1300,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lPara
 }  // namespace
 
 int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    Gdiplus::GdiplusStartup(&g_gdiplusToken, &gdiplusStartupInput, nullptr);
+
     Game game;
     g_game = &game;
 
-    const char kClassName[] = "PulseHarborWindowClass";
+    const char kClassName[] = "DarkSoulsVWindowClass";
 
     WNDCLASSA wc{};
     wc.lpfnWndProc = WindowProc;
@@ -924,7 +1323,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     HWND hwnd = CreateWindowExA(
         0,
         kClassName,
-        "Pulse Harbor",
+        "Dark Souls V",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -946,6 +1345,15 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     while (GetMessage(&msg, nullptr, 0, 0) > 0) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+
+    g_gameOverImage.reset();
+    g_ringPowerupImage.reset();
+    g_enemySpriteImage.reset();
+    g_poopBulletImage.reset();
+    g_menuBackgroundImage.reset();
+    if (g_gdiplusToken != 0) {
+        Gdiplus::GdiplusShutdown(g_gdiplusToken);
     }
 
     return static_cast<int>(msg.wParam);

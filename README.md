@@ -1,6 +1,6 @@
-# Pulse Harbor
+# Dark Souls V
 
-`Pulse Harbor` is a small C++ graphical mini-game created for the Advanced Programming course project requirement.
+`Dark Souls V` is a small C++ graphical mini-game created for the Advanced Programming course project requirement.
 
 ## What it does
 
@@ -8,6 +8,8 @@
 - Pure Win32 + GDI rendering, so it does not rely on Qt, SFML, SDL, or external art assets.
 - Complete flow with menu, gameplay, pause, game over, and restart.
 - Includes `Normal` and `Hard` modes with clearly different gameplay parameters.
+- Random ring relic power-up grants `5` seconds of infinite energy on pickup.
+- Enemies now use a sprite model and can occasionally fire projectile attacks.
 - Player survives meteor waves, collects energy shards, and uses a pulse skill to clear nearby threats.
 
 ## Controls
@@ -34,7 +36,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 The executable will be generated at:
 
 ```text
-build/PulseHarbor.exe
+build/Dark Souls V.exe
 ```
 
 ## Project Highlights
