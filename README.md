@@ -10,6 +10,8 @@
 - Includes `Normal` and `Hard` modes with clearly different gameplay parameters.
 - Random ring relic power-up grants `5` seconds of infinite energy on pickup.
 - Enemies now use a sprite model and can occasionally fire projectile attacks.
+- The player character uses a transparent knight sprite instead of a simple circle.
+- Pulse activation now renders a single flaming sword sweep with a circular fire trail.
 - Player survives meteor waves, collects energy shards, and uses a pulse skill to clear nearby threats.
 
 ## Controls

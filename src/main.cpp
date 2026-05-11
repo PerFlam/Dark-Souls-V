@@ -16,6 +16,7 @@ namespace {
 
 using Gdiplus::Color;
 using Gdiplus::Graphics;
+using Gdiplus::ImageAttributes;
 using Gdiplus::Image;
 using Gdiplus::RectF;
 using Gdiplus::SolidBrush;
@@ -200,6 +201,9 @@ std::unique_ptr<Image> g_ringPowerupImage;
 std::unique_ptr<Image> g_enemySpriteImage;
 std::unique_ptr<Image> g_poopBulletImage;
 std::unique_ptr<Image> g_menuBackgroundImage;
+std::unique_ptr<Image> g_swordPulseImage;
+std::unique_ptr<Image> g_gameplayBackgroundImage;
+std::unique_ptr<Image> g_playerSpriteImage;
 
 std::wstring GetExecutableDirectory() {
     wchar_t buffer[MAX_PATH]{};
@@ -300,6 +304,39 @@ void EnsureMenuBackgroundLoaded() {
     auto image = std::make_unique<Image>(GetAssetPath(L"menu_background.png").c_str());
     if (image->GetLastStatus() == Gdiplus::Ok) {
         g_menuBackgroundImage = std::move(image);
+    }
+}
+
+void EnsureSwordPulseImageLoaded() {
+    if (g_swordPulseImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"sword_pulse.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_swordPulseImage = std::move(image);
+    }
+}
+
+void EnsureGameplayBackgroundLoaded() {
+    if (g_gameplayBackgroundImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"gameplay_background.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_gameplayBackgroundImage = std::move(image);
+    }
+}
+
+void EnsurePlayerSpriteLoaded() {
+    if (g_playerSpriteImage != nullptr) {
+        return;
+    }
+
+    auto image = std::make_unique<Image>(GetAssetPath(L"player_sprite.png").c_str());
+    if (image->GetLastStatus() == Gdiplus::Ok) {
+        g_playerSpriteImage = std::move(image);
     }
 }
 
@@ -799,6 +836,25 @@ private:
     }
 
     void DrawBackground(HDC hdc, const RECT& clientRect) {
+        EnsureGameplayBackgroundLoaded();
+        if (g_gameplayBackgroundImage != nullptr) {
+            Graphics graphics(hdc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+            graphics.DrawImage(g_gameplayBackgroundImage.get(),
+                               RectF(0.0f,
+                                     0.0f,
+                                     static_cast<float>(clientRect.right),
+                                     static_cast<float>(clientRect.bottom)));
+
+            SolidBrush dimBrush(Color(58, 0, 0, 0));
+            graphics.FillRectangle(&dimBrush,
+                                   0.0f,
+                                   0.0f,
+                                   static_cast<float>(clientRect.right),
+                                   static_cast<float>(clientRect.bottom));
+            return;
+        }
+
         HBRUSH backBrush = CreateSolidBrush(RGB(8, 11, 26));
         FillRect(hdc, &clientRect, backBrush);
         DeleteObject(backBrush);
@@ -840,17 +896,50 @@ private:
     void DrawPlayer(HDC hdc) {
         bool blinking = player_.invulnerable > 0.0f &&
                         static_cast<int>(player_.invulnerable * 12.0f) % 2 == 0;
+        EnsurePlayerSpriteLoaded();
+        if (g_playerSpriteImage != nullptr) {
+            Graphics graphics(hdc);
+            graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
+
+            const float spriteHeight = 76.0f;
+            const float spriteWidth = spriteHeight *
+                                      static_cast<float>(g_playerSpriteImage->GetWidth()) /
+                                      static_cast<float>(g_playerSpriteImage->GetHeight());
+            const float opacity = blinking ? 0.45f : 1.0f;
+            Gdiplus::ColorMatrix playerMatrix = {
+                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, opacity, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+            };
+            ImageAttributes attributes;
+            attributes.SetColorMatrix(&playerMatrix,
+                                      Gdiplus::ColorMatrixFlagsDefault,
+                                      Gdiplus::ColorAdjustTypeBitmap);
+
+            RectF rect(player_.pos.x - spriteWidth * 0.5f,
+                       player_.pos.y - spriteHeight * 0.58f,
+                       spriteWidth,
+                       spriteHeight);
+            graphics.DrawImage(g_playerSpriteImage.get(),
+                               rect,
+                               0.0f,
+                               0.0f,
+                               static_cast<float>(g_playerSpriteImage->GetWidth()),
+                               static_cast<float>(g_playerSpriteImage->GetHeight()),
+                               Gdiplus::UnitPixel,
+                               &attributes);
+
+            if (player_.invulnerable > 0.0f) {
+                DrawOutlineCircle(hdc, player_.pos, player_.radius + 7.0f, RGB(255, 220, 110), 2);
+            }
+            return;
+        }
+
         COLORREF color = blinking ? RGB(255, 240, 170) : RGB(115, 235, 255);
         DrawFilledCircle(hdc, player_.pos, player_.radius, color);
         DrawOutlineCircle(hdc, player_.pos, player_.radius + 6.0f, RGB(70, 165, 210), 2);
-
-        Vec2 nose{player_.pos.x, player_.pos.y - player_.radius - 10.0f};
-        HPEN pen = CreatePen(PS_SOLID, 2, RGB(170, 240, 255));
-        HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
-        MoveToEx(hdc, static_cast<int>(player_.pos.x), static_cast<int>(player_.pos.y), nullptr);
-        LineTo(hdc, static_cast<int>(nose.x), static_cast<int>(nose.y));
-        SelectObject(hdc, oldPen);
-        DeleteObject(pen);
     }
 
     void DrawMeteors(HDC hdc) {
@@ -901,11 +990,120 @@ private:
     }
 
     void DrawPulseEffects(HDC hdc) {
+        EnsureSwordPulseImageLoaded();
+        Graphics graphics(hdc);
+        graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
         for (const auto& pulse : pulses_) {
-            float t = 1.0f - pulse.life / pulse.maxLife;
-            float radius = 28.0f + pulse.maxRadius * t;
-            int intensity = static_cast<int>(255 - 120 * t);
-            DrawOutlineCircle(hdc, pulse.pos, radius, RGB(120, intensity, 255), 3);
+            float t = ClampFloat(1.0f - pulse.life / pulse.maxLife, 0.0f, 1.0f);
+            float radius = 42.0f + pulse.maxRadius * (0.25f + 0.75f * t);
+
+            if (g_swordPulseImage == nullptr) {
+                int intensity = static_cast<int>(255 - 120 * t);
+                DrawOutlineCircle(hdc, pulse.pos, radius, RGB(120, intensity, 255), 3);
+                continue;
+            }
+
+            const float sweepDegrees = 360.0f * t;
+            const float swordAngle = -95.0f + sweepDegrees;
+            const float swordRadians = swordAngle * 0.0174532925f;
+            const float swordX = pulse.pos.x + std::cos(swordRadians) * radius;
+            const float swordY = pulse.pos.y + std::sin(swordRadians) * radius;
+            const float fade = ClampFloat(1.0f - t * 0.35f, 0.25f, 1.0f);
+
+            for (int i = 0; i < 9; ++i) {
+                float trailT = static_cast<float>(i) / 8.0f;
+                float alphaScale = (1.0f - trailT) * fade;
+                int alpha = static_cast<int>(145.0f * alphaScale);
+                if (alpha <= 0) {
+                    continue;
+                }
+
+                float trailRadius = radius - trailT * 18.0f;
+                float trailSweep = std::min(68.0f + trailT * 38.0f, sweepDegrees);
+                float start = swordAngle - trailSweep;
+                Gdiplus::Pen outerPen(Color(alpha, 255, 72, 18), 18.0f - trailT * 8.0f);
+                Gdiplus::Pen innerPen(Color(static_cast<BYTE>(alpha * 0.75f), 255, 190, 52), 7.0f - trailT * 2.5f);
+                graphics.DrawArc(&outerPen,
+                                 pulse.pos.x - trailRadius,
+                                 pulse.pos.y - trailRadius,
+                                 trailRadius * 2.0f,
+                                 trailRadius * 2.0f,
+                                 start,
+                                 trailSweep);
+                graphics.DrawArc(&innerPen,
+                                 pulse.pos.x - trailRadius,
+                                 pulse.pos.y - trailRadius,
+                                 trailRadius * 2.0f,
+                                 trailRadius * 2.0f,
+                                 start + 4.0f,
+                                 trailSweep * 0.82f);
+            }
+
+            const float swordHeight = 150.0f;
+            const float swordWidth = swordHeight *
+                                     static_cast<float>(g_swordPulseImage->GetWidth()) /
+                                     static_cast<float>(g_swordPulseImage->GetHeight());
+            const float flameOpacity = ClampFloat(0.85f - t * 0.25f, 0.35f, 0.85f);
+            Gdiplus::ColorMatrix flameMatrix = {
+                1.25f, 0.0f, 0.0f, 0.0f, 0.0f,
+                0.35f, 0.72f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.10f, 0.12f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, flameOpacity, 0.0f,
+                0.18f, 0.04f, 0.0f, 0.0f, 1.0f,
+            };
+            ImageAttributes flameAttributes;
+            flameAttributes.SetColorMatrix(&flameMatrix,
+                                           Gdiplus::ColorMatrixFlagsDefault,
+                                           Gdiplus::ColorAdjustTypeBitmap);
+
+            Gdiplus::ColorMatrix swordMatrix = {
+                1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                0.0f, 0.0f, 0.0f, fade, 0.0f,
+                0.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+            };
+            ImageAttributes swordAttributes;
+            swordAttributes.SetColorMatrix(&swordMatrix,
+                                           Gdiplus::ColorMatrixFlagsDefault,
+                                           Gdiplus::ColorAdjustTypeBitmap);
+
+            Gdiplus::GraphicsState state = graphics.Save();
+            graphics.TranslateTransform(swordX, swordY);
+            graphics.RotateTransform(swordAngle + 132.0f);
+
+            for (int i = 0; i < 4; ++i) {
+                float scale = 1.18f + i * 0.09f;
+                float offset = 8.0f + i * 4.0f;
+                RectF flameRect(-swordWidth * scale * 0.5f - offset,
+                                -swordHeight * scale * 0.5f,
+                                swordWidth * scale,
+                                swordHeight * scale);
+                graphics.DrawImage(g_swordPulseImage.get(),
+                                   flameRect,
+                                   0.0f,
+                                   0.0f,
+                                   static_cast<float>(g_swordPulseImage->GetWidth()),
+                                   static_cast<float>(g_swordPulseImage->GetHeight()),
+                                   Gdiplus::UnitPixel,
+                                   &flameAttributes);
+            }
+
+            Gdiplus::Pen flameCore(Color(static_cast<BYTE>(210 * fade), 255, 205, 84), 5.0f);
+            graphics.DrawLine(&flameCore, -swordWidth * 0.05f, swordHeight * 0.44f, swordWidth * 0.20f, -swordHeight * 0.42f);
+
+            RectF swordRect(-swordWidth * 0.5f, -swordHeight * 0.5f, swordWidth, swordHeight);
+            graphics.DrawImage(g_swordPulseImage.get(),
+                               swordRect,
+                               0.0f,
+                               0.0f,
+                               static_cast<float>(g_swordPulseImage->GetWidth()),
+                               static_cast<float>(g_swordPulseImage->GetHeight()),
+                               Gdiplus::UnitPixel,
+                               &swordAttributes);
+            graphics.Restore(state);
         }
     }
 
@@ -1026,7 +1224,6 @@ private:
 
         const bool normalSelected = selectedMode_ == DifficultyMode::Normal;
         const bool hardSelected = selectedMode_ == DifficultyMode::Hard;
-        DrawCenterBlock(hdc, clientRect, 180);
         DrawCenteredText(hdc, clientRect, 168, 44, FW_BOLD, RGB(245, 248, 255), "DARK SOULS V");
         DrawCenteredText(hdc, clientRect, 228, 24, FW_NORMAL, RGB(180, 220, 255),
                          "Survive the meteor field and release pulse waves.");
@@ -1056,7 +1253,6 @@ private:
     }
 
     void DrawPauseOverlay(HDC hdc, const RECT& clientRect) {
-        DrawCenterBlock(hdc, clientRect, 160);
         DrawCenteredText(hdc, clientRect, 238, 40, FW_BOLD, RGB(245, 248, 255), "PAUSED");
         DrawCenteredText(hdc, clientRect, 294, 24, FW_NORMAL, RGB(180, 220, 255),
                          "Press Esc or P to continue.");
@@ -1352,6 +1548,9 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int showCommand) {
     g_enemySpriteImage.reset();
     g_poopBulletImage.reset();
     g_menuBackgroundImage.reset();
+    g_swordPulseImage.reset();
+    g_gameplayBackgroundImage.reset();
+    g_playerSpriteImage.reset();
     if (g_gdiplusToken != 0) {
         Gdiplus::GdiplusShutdown(g_gdiplusToken);
     }
